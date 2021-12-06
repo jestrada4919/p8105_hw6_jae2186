@@ -57,7 +57,7 @@ df <-
   select(-pnumlbw, -pnumsga)
 ```
 
-(Note: Certain variables were removed from the data set because it was noted there were no differences in this variable across the data set - i.e. there were no mothers who reported a having previous low birth weight babies (`pnumlbw`) nor prior small for gestational age babies (`pnumsga`).
+(Note: Certain variables were removed from the data set because it was noted there were no differences in this variable across the data set - i.e. there were no mothers who reported a having previous low birth weight babies (`pnumlbw`) nor prior small for gestational age babies (`pnumsga`).)
 
 ### Setting up primary model
 
@@ -152,4 +152,107 @@ cv_df %>%
 
 As noted, the two models used for comparison fit the data better based solely on the resulting RSME values. The primary piecewise linear model had notably higher RSMEs; however, considering that this model only considered one predictor of birth weight it is not surprising that it did not fit the data as well as models built around the interactions of at least 2 variables. When considering the interactions of 3 different predictors as in model 3, the error and fit of the model is improved compared to model 2 which only looks at the main interaction of 2 predictors.
 
+## Problem 2: Bootstrapping of Central Park weather data
+### Data Introduction
 
+Using weather data from Central Park in 2017, the following work will explore a simple linear regression that assess maximum daily temperatures (`tmax`) as a response to the predictor of minimum daily temperature (`tmin`). 
+
+```{r weather_data, message=FALSE, warning=FALSE}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+### Boostrapping data
+
+Bootstrapping of the data with 5000 bootstrap samples is completed as follows:
+
+```{r bootstrap}
+boot_weather <-
+  weather_df %>% 
+  bootstrap(5000, id = "strap_number") %>% 
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy),
+    r_sq = map(models, broom::glance)) %>% 
+  select(strap_number, results, r_sq)
+```
+
+Two estimates of interest which are not explicitly provided in the models include:
+
+* $$r̂_ 2$$
+* $$log(β̂_ 0∗β̂_ 1)$$
+
+The distributions of these estimates among all the bootstrap samples are then shown with the following density plots: 
+
+```{r r-squared}
+rsq <-
+  boot_weather %>% 
+  unnest(r_sq) %>% 
+  select(strap_number, r.squared) %>% 
+  janitor::clean_names()
+  
+rsq %>% 
+  ggplot(aes(x = r_squared)) + 
+  geom_density() + 
+  labs(
+    x = "Estimated R-squared",
+    y = "Density")
+```
+
+The above density plot for the estimated r-squared values shows a very slightly longer lower tail indicating that there might be some lower outliers but overall the distribution appears to be normal with a distribution centered between 0.90 and 0.92 (but closer to 0.92).
+
+```{r log_beta}
+log_beta <-
+  boot_weather %>%
+  unnest(results) %>% 
+  select(strap_number, term, estimate) %>% 
+  pivot_wider(names_from = term, values_from = estimate) %>% 
+  janitor::clean_names() %>% 
+  mutate(log_beta = intercept * tmin)
+
+
+log_beta %>% 
+  ggplot(aes(x = log_beta)) + 
+  geom_density() + 
+  labs(
+    x = "Log-product of estimated beta values",
+    y = "Density")
+
+```
+
+The above density distribution for the log-product of the two beta values (i.e. the estimates for the intercept $$β̂_ 0$$ and tmax $$ β̂_ 1$$ also apprears to have a relatively normal dsitribtion about 7.5 but has a much sharper peak rather than being smooth. 
+
+```{r 95_ci}
+rsq %>% 
+  summarize(
+    ci_lower = quantile(r_squared, 0.025), 
+    ci_upper = quantile(r_squared, 0.975)
+  ) %>% 
+  knitr::kable(digits = 3, 
+               col.names = c("Lower interval", "Upper interval"),
+               caption = "95% confidence interval for estimated R-squared values")
+
+log_beta %>% 
+  summarize(
+    ci_lower = quantile(log_beta, 0.025), 
+    ci_upper = quantile(log_beta, 0.975)
+  ) %>% 
+  knitr::kable(digits = 3, 
+               col.names = c("Lower interval", "Upper interval"),
+               caption = "95% confidence interval for the log-product of the estimated beta-values")
+
+```
+
+The resulting 95% confidence intervals are noted to be: 
+
+* for the estimated R-squares: a lower confidence interval of 0.894 and upper interval of 0.927, and
+* for the log-product of the estimated beta values: a lower confidence interval of 7.149	and upper interval of 7.834.
